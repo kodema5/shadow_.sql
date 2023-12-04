@@ -6,7 +6,7 @@
 
 -- moves data to shadow schema
 --
-create function shadow_.on_insert()
+create function shadow_.on_before_insert()
     returns trigger
     language plpgsql
     security definer
@@ -24,6 +24,12 @@ begin
         quote_literal(new));
 
     return null;
+
+-- for upsert -- this however targets parent vs child table
+-- exception
+--     when unique_violation then
+--         return new;
+
 end;
 $$;
 
@@ -41,12 +47,12 @@ begin
     execute format(
         case
         when is_enable then
-            'create trigger shadow_on_insert_%I_%I '
+            'create trigger shadow_on_before_insert_%I_%I '
             'before insert on %1$I.%2$I '
             'for each row '
-            'execute function shadow_.on_insert()'
+            'execute function shadow_.on_before_insert()'
         else
-            'drop trigger if exists shadow_on_insert_%I_%I '
+            'drop trigger if exists shadow_on_before_insert_%I_%I '
             'on %1$I.%2$I'
         end,
         schema_name,
@@ -79,6 +85,7 @@ $$;
         language plpgsql
         set search_path = shadow_, public
     as $$
+
     begin
         drop schema if exists foo cascade;
         drop schema if exists foo_ cascade;
@@ -88,15 +95,23 @@ $$;
 
         insert into foo.bar values (1, 'a');
         return next ok(exists (select from foo.bar where a=1 and b='a'), 'has row');
+        return next ok(not exists (select from only foo.bar where a=1 and b='a'), 'should not be in foo');
+        return next ok(exists (select from only foo_.bar where a=1 and b='a'), 'but in foo_');
 
         return next throws_ok('
             insert into foo.bar values (1, ''b'')
             on conflict (a)
-            do update set b = ''conflicted''
+            do update set b = excluded.b
         ');
         return next ok(
-            NOT exists (select from foo.bar where a=1 and b='conflicted'),
+            NOT exists (select from foo.bar where a=1 and b='b'),
             'insert on conflict is NOT supported!');
+
+        -- insert into foo.bar values (1, 'b')
+        --     on conflict (a)
+        --     do update set b = excluded.b;
+        -- return next ok(not exists (select from only foo.bar where a=1 and b='b'), 'should not be in foo');
+        -- return next ok(exists (select from only foo_.bar where a=1 and b='b'), 'but in foo_');
 
         drop schema if exists foo cascade;
         drop schema if exists foo_ cascade;
